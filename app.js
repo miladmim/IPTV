@@ -690,7 +690,11 @@ function tune(idx, o) {
   if (o.zap) P.zap = o.zap;
   else if (!P.zap.length) P.zap = S.view.slice();
   P.idx = idx;
-  P.direct = o.direct !== undefined ? o.direct : (S.proxyMode === 'direct');
+  if (ch.src === 0) {
+    P.direct = true; // Iranian channels are never filtered inside Iran and geo-block foreign proxies
+  } else {
+    P.direct = o.direct !== undefined ? o.direct : (S.proxyMode === 'direct');
+  }
   P.retries = 0; P.netR = 0; P.mediaR = 0; P.stall = 0; P.loadT = 0;
   P.tuneT0 = performance.now();
   pushRecent(ch.id); store.set('last', ch.id);
@@ -738,7 +742,9 @@ function stopEngine() {
 }
 
 function resolveStreamUrl(rawUrl, direct) {
+  if (!rawUrl) return '';
   if (direct || S.proxyMode === 'direct') return rawUrl;
+  if (rawUrl.indexOf('corsproxy.io') >= 0 || (S.customProxy && rawUrl.indexOf(S.customProxy) >= 0)) return rawUrl;
   if (S.proxyMode === 'custom' && S.customProxy) {
     var base = S.customProxy.replace(/\/+$/, '');
     return base + (base.indexOf('?') >= 0 ? '&url=' : '/?url=') + encodeURIComponent(rawUrl);
@@ -764,7 +770,7 @@ function attach(src, id) {
   var v = video;
   var native = v.canPlayType('application/vnd.apple.mpegurl');
   if (window.Hls && Hls.isSupported() && !(native && isApple && /iPhone|iPod/.test(navigator.userAgent))) {
-    var hls = new Hls({
+    var hlsConfig = {
       enableWorker: true,
       lowLatencyMode: false,
       backBufferLength: 20,
@@ -778,7 +784,26 @@ function attach(src, id) {
       manifestLoadPolicy: { default: { maxTimeToFirstByteMs: 12000, maxLoadTimeMs: 20000, timeoutRetry: { maxNumRetry: 3, retryDelayMs: 800, maxRetryDelayMs: 4000 }, errorRetry: { maxNumRetry: 3, retryDelayMs: 800, maxRetryDelayMs: 4000 } } },
       playlistLoadPolicy: { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 20000, timeoutRetry: { maxNumRetry: 4, retryDelayMs: 600, maxRetryDelayMs: 4000 }, errorRetry: { maxNumRetry: 4, retryDelayMs: 600, maxRetryDelayMs: 4000 } } },
       fragLoadPolicy: { default: { maxTimeToFirstByteMs: 15000, maxLoadTimeMs: 60000, timeoutRetry: { maxNumRetry: 4, retryDelayMs: 500, maxRetryDelayMs: 4000 }, errorRetry: { maxNumRetry: 5, retryDelayMs: 700, maxRetryDelayMs: 5000 } } }
-    });
+    };
+
+    if (Hls.DefaultConfig && Hls.DefaultConfig.loader) {
+      var BaseLoader = Hls.DefaultConfig.loader;
+      function StreamProxyLoader(config) {
+        BaseLoader.call(this, config);
+        var origLoad = this.load.bind(this);
+        this.load = function (context, config, callbacks) {
+          if (!P.direct && context && context.url) {
+            context.url = resolveStreamUrl(context.url, false);
+          }
+          return origLoad(context, config, callbacks);
+        };
+      }
+      StreamProxyLoader.prototype = Object.create(BaseLoader.prototype);
+      hlsConfig.pLoader = StreamProxyLoader;
+      hlsConfig.fLoader = StreamProxyLoader;
+    }
+
+    var hls = new Hls(hlsConfig);
     P.hls = hls;
     hls.on(Hls.Events.MANIFEST_PARSED, function () { if (id === P.engineId) playVideo(); });
     hls.on(Hls.Events.LEVEL_SWITCHED, function () { renderOSD(); });
